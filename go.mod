@@ -23,6 +23,7 @@ require (
 	github.com/stretchr/testify v1.8.0
 	golang.org/x/net v0.7.0
 	golang.org/x/oauth2 v0.3.0
+	golang.org/x/term v0.17.0
 	golang.org/x/time v0.0.0-20220210224613-90d013bbcef8
 	gopkg.in/ini.v1 v1.67.0
 	k8s.io/apimachinery v0.26.1
@@ -64,7 +65,6 @@ require (
 	golang.org/x/exp v0.0.0-20221205204356-47842c84f3db // indirect
 	golang.org/x/mod v0.8.0 // indirect
 	golang.org/x/sys v0.17.0 // indirect
-	golang.org/x/term v0.17.0 // indirect
 	golang.org/x/text v0.7.0 // indirect
 	golang.org/x/tools v0.6.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
