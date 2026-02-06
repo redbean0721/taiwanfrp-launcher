@@ -575,21 +575,10 @@ func findFrpcBinary() (string, error) {
 	}
 	exe, err := os.Executable()
 	if err == nil {
-		// If current executable is already frpc (or renamed client), reuse itself.
-		base := strings.ToLower(filepath.Base(exe))
-		if base == "frpc" || base == "frpc.exe" || base == "taiwanfrpclient" || base == "taiwanfrpclient.exe" {
-			return exe, nil
-		}
-		dir := filepath.Dir(exe)
-		name := "frpc"
-		if runtime.GOOS == "windows" {
-			name = "frpc.exe"
-		}
-		candidate := filepath.Join(dir, name)
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
-		}
+		// Prefer current executable to avoid path lookup issues (supports renamed binaries).
+		return exe, nil
 	}
+
 	name := "frpc"
 	if runtime.GOOS == "windows" {
 		name = "frpc.exe"
