@@ -82,6 +82,13 @@ func Run(args []string) error {
 	fmt.Println("歡迎使用 TaiwanFRP 客戶端！")
 	fmt.Println("正在啟動啟動器，請稍候...")
 
+	if guiAvailable() && !hasArg(args, "-nogui") {
+		if err := runGUI(); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	if err := os.MkdirAll(infoDir, 0755); err != nil {
 		return fmt.Errorf("failed to create %s: %w", infoDir, err)
 	}
@@ -172,7 +179,16 @@ func Run(args []string) error {
 			return err
 		}
 
-		return startFrpcProcesses(frpcPath, nodes, node2iniContent, nodeSelected)
+		manager, err := startFrpcProcesses(frpcPath, nodes, node2iniContent, nodeSelected, nil)
+		if err != nil {
+			return err
+		}
+		fmt.Println("所有 frpc 已啟動，按 Ctrl+C 結束所有代理...")
+		waitForSignal()
+		manager.Stop()
+		manager.Wait()
+		fmt.Println("所有 frpc 已結束，客戶端退出。")
+		return nil
 	}
 }
 
@@ -184,6 +200,9 @@ func parseArgs(args []string) int {
 		if arg == "--no-launcher" {
 			return 0
 		}
+		if arg == "-nogui" || arg == "--nogui" {
+			continue
+		}
 	}
 	switch args[1] {
 	case "-h", "--help":
@@ -192,6 +211,8 @@ func parseArgs(args []string) int {
 	case "-v", "--version":
 		fmt.Printf("%s %s\n%s\n", appName, version, copyright)
 		return 2
+	case "-nogui", "--nogui":
+		return -1
 	default:
 		if strings.HasPrefix(args[1], "-") {
 			fmt.Printf("Unknown option: %s\nUse -h for help\n", args[1])
@@ -199,6 +220,15 @@ func parseArgs(args []string) int {
 		}
 		return -1
 	}
+}
+
+func hasArg(args []string, needle string) bool {
+	for _, a := range args[1:] {
+		if a == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func loadInfoIfExists(path string) (infoFileData, error) {
@@ -603,16 +633,43 @@ func findFrpcBinary() (string, error) {
 	return "", fmt.Errorf("找不到 frpc，可設定環境變數 FRPC_BIN 指定路徑")
 }
 
-func startFrpcProcesses(frpc string, nodes []nodeInfo, node2iniContent map[string]string, nodeSelected map[string][]string) error {
+type FrpcManager struct {
+	cmds []*exec.Cmd
+	wg   sync.WaitGroup
+	done chan struct{}
+	cancel context.CancelFunc
+}
+
+func (m *FrpcManager) Stop() {
+	if m.cancel != nil {
+		m.cancel()
+	}
+	for _, cmd := range m.cmds {
+		_ = terminateProcess(cmd)
+	}
+}
+
+func (m *FrpcManager) Wait() {
+	for _, cmd := range m.cmds {
+		_ = cmd.Wait()
+	}
+	m.wg.Wait()
+	if m.done != nil {
+		close(m.done)
+	}
+}
+
+func startFrpcProcesses(frpc string, nodes []nodeInfo, node2iniContent map[string]string, nodeSelected map[string][]string, logFn func(node, line string)) (*FrpcManager, error) {
 	if len(nodeSelected) == 0 {
-		return fmt.Errorf("沒有可啟動的代理")
+		return nil, fmt.Errorf("沒有可啟動的代理")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
-	var cmds []*exec.Cmd
-	var wg sync.WaitGroup
+	manager := &FrpcManager{
+		done: make(chan struct{}),
+		cancel: cancel,
+	}
 
 	for _, node := range nodes {
 		proxies, ok := nodeSelected[node.Name]
@@ -625,7 +682,8 @@ func startFrpcProcesses(frpc string, nodes []nodeInfo, node2iniContent map[strin
 		}
 		dstIni := filepath.Join(infoDir, "frpc_"+node.Name+".ini")
 		if err := writeIniFromContent(srcIniContent, dstIni, proxies); err != nil {
-			return err
+			manager.Stop()
+			return nil, err
 		}
 
 		cmd := exec.CommandContext(ctx, frpc, "-c", dstIni)
@@ -634,28 +692,18 @@ func startFrpcProcesses(frpc string, nodes []nodeInfo, node2iniContent map[strin
 		stderr, _ := cmd.StderrPipe()
 
 		if err := cmd.Start(); err != nil {
-			return err
+			manager.Stop()
+			return nil, err
 		}
 		fmt.Printf("[%s] frpc 啟動成功 (PID: %d)\n", node.Name, cmd.Process.Pid)
 
-		wg.Add(2)
-		go streamWithPrefix(stdout, node.Name, &wg)
-		go streamWithPrefix(stderr, node.Name, &wg)
-		cmds = append(cmds, cmd)
+		manager.wg.Add(2)
+		go streamWithPrefix(stdout, node.Name, logFn, &manager.wg)
+		go streamWithPrefix(stderr, node.Name, logFn, &manager.wg)
+		manager.cmds = append(manager.cmds, cmd)
 	}
 
-	fmt.Println("所有 frpc 已啟動，按 Ctrl+C 結束所有代理...")
-	waitForSignal()
-
-	for _, cmd := range cmds {
-		_ = terminateProcess(cmd)
-	}
-	for _, cmd := range cmds {
-		_ = cmd.Wait()
-	}
-	wg.Wait()
-	fmt.Println("所有 frpc 已結束，客戶端退出。")
-	return nil
+	return manager, nil
 }
 
 func waitForSignal() {
@@ -684,14 +732,18 @@ func terminateProcess(cmd *exec.Cmd) error {
 	}
 }
 
-func streamWithPrefix(r io.ReadCloser, prefix string, wg *sync.WaitGroup) {
+func streamWithPrefix(r io.ReadCloser, prefix string, logFn func(node, line string), wg *sync.WaitGroup) {
 	defer wg.Done()
 	scanner := bufio.NewScanner(r)
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		fmt.Printf("[%s] %s\n", prefix, line)
+		if logFn != nil {
+			logFn(prefix, line)
+		} else {
+			fmt.Printf("[%s] %s\n", prefix, line)
+		}
 	}
 }
 

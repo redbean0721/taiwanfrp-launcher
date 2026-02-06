@@ -21,6 +21,7 @@ if ! grep -q "^\\.DS_Store$" .gitignore; then
 fi
 
 "$GO20" mod tidy
+export GOFLAGS="-tags=nogui"
 PATH="/opt/homebrew/opt/go@1.20/bin:$PATH" make -f Makefile.cross-compiles
 
 git add .
