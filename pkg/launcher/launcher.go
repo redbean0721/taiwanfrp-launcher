@@ -448,7 +448,7 @@ func selectProxiesInOrder(nodes []nodeInfo, node2proxies map[string][]string, ex
 	for {
 		if firstShow {
 			printProxyListInOrder(nodes, node2proxies, idx2np, selected)
-			fmt.Println("(前面數字代碼)，再次輸入是取消選擇（多選用逗號分隔，輸入數字切換選擇，all 全選，stop 啟動）")
+			fmt.Println("輸入節點代碼來選擇節點，再次輸入是取消選擇（多選用逗號分隔，輸入數字切換選擇，all 全選，stop 啟動）")
 			firstShow = false
 		}
 		input := ""
