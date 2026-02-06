@@ -32,6 +32,11 @@ fi
 git commit -m "$MSG" || true
 git push -f "$REMOTE" HEAD:"$BRANCH"
 
+DESKTOP_RELEASE="/Users/zhangqiwei/Desktop/release"
+if [ -d "$DESKTOP_RELEASE" ]; then
+  TS=$(date +"%Y%m%d_%H%M%S")
+  mv "$DESKTOP_RELEASE" "/Users/zhangqiwei/Desktop/release_$TS"
+fi
 mv "$ROOT/release" "/Users/zhangqiwei/Desktop/"
 
 read -r -p "Release tag (e.g. v1.0.0, empty to skip): " TAG
