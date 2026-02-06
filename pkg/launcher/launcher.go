@@ -574,9 +574,20 @@ func findFrpcBinary() (string, error) {
 		return v, nil
 	}
 	exe, err := os.Executable()
-	if err == nil {
+	if err == nil && exe != "" {
 		// Prefer current executable to avoid path lookup issues (supports renamed binaries).
 		return exe, nil
+	}
+	// Fallback to argv[0] if os.Executable fails (common on some Windows setups).
+	if os.Args != nil && len(os.Args) > 0 && os.Args[0] != "" {
+		if abs, err := filepath.Abs(os.Args[0]); err == nil {
+			if _, statErr := os.Stat(abs); statErr == nil {
+				return abs, nil
+			}
+		}
+		if p, err := exec.LookPath(os.Args[0]); err == nil {
+			return p, nil
+		}
 	}
 
 	name := "frpc"
