@@ -66,7 +66,40 @@ add_version_suffix() {
 rm -rf "$ROOT/release"
 mkdir -p "$ROOT/release"
 
-PATH="/opt/homebrew/opt/go@1.20/bin:$PATH" make -f Makefile.cross-compiles
+# Build frps only (multi-platform)
+os_archs=(
+  "darwin:amd64"
+  "darwin:arm64"
+  "freebsd:386"
+  "freebsd:amd64"
+  "linux:386"
+  "linux:amd64"
+  "linux:arm"
+  "linux:arm64"
+  "windows:386"
+  "windows:amd64"
+  "windows:arm64"
+  "linux:mips64"
+  "linux:mips64le"
+  "linux:mips:softfloat"
+  "linux:mipsle:softfloat"
+  "linux:riscv64"
+)
+
+for target in "${os_archs[@]}"; do
+  os="$(echo "$target" | cut -d: -f1)"
+  arch="$(echo "$target" | cut -d: -f2)"
+  gomips="$(echo "$target" | cut -d: -f3)"
+  suffix="${os}_${arch}"
+  out="./release/frps_${suffix}"
+  if [ "$os" = "windows" ]; then
+    out="${out}.exe"
+  fi
+  echo "Build frps ${os}-${arch}..."
+  CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" GOMIPS="$gomips" \
+    PATH="/opt/homebrew/opt/go@1.20/bin:$PATH" \
+    "$GO20" build -trimpath -ldflags "-s -w" -o "$out" ./cmd/frps
+done
 
 # Add version suffix to artifacts
 if [ -d "$ROOT/release" ]; then
@@ -108,7 +141,7 @@ if [[ "${CREATE_TAG}" =~ ^[Yy]$ ]]; then
     gh release create "$VERSION_TAG" /Users/zhangqiwei/Desktop/release/* \
       --repo "$REPO" \
       --title "$VERSION_TAG" \
-      --notes "taiwanfrp server/client $VERSION_TAG"
+      --notes "taiwanfrp server $VERSION_TAG"
   else
     echo "gh CLI not found. Install with: brew install gh"
     echo "Then run: gh auth login"
