@@ -64,11 +64,16 @@ type nodesResponse struct {
 type nodeInfo struct {
 	Name          string `json:"name"`
 	FrpcIniFolder string `json:"frpcIniFolder"`
+	IP            string `json:"ip"`
 }
 
 // Run executes the launcher flow. It returns ErrBypass if the caller should
 // continue to the normal frpc execution path.
 func Run(args []string) error {
+	if err := chdirToExecutableDir(); err != nil {
+		return err
+	}
+
 	if exitCode := parseArgs(args); exitCode != -1 {
 		if exitCode == 0 {
 			return ErrBypass
@@ -190,6 +195,21 @@ func Run(args []string) error {
 		fmt.Println("所有 frpc 已結束，客戶端退出。")
 		return nil
 	}
+}
+
+func chdirToExecutableDir() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to resolve executable path: %w", err)
+	}
+	dir := filepath.Dir(exe)
+	if dir == "" {
+		return nil
+	}
+	if err := os.Chdir(dir); err != nil {
+		return fmt.Errorf("failed to change working directory to %s: %w", dir, err)
+	}
+	return nil
 }
 
 func parseArgs(args []string) int {
@@ -634,9 +654,9 @@ func findFrpcBinary() (string, error) {
 }
 
 type FrpcManager struct {
-	cmds []*exec.Cmd
-	wg   sync.WaitGroup
-	done chan struct{}
+	cmds   []*exec.Cmd
+	wg     sync.WaitGroup
+	done   chan struct{}
 	cancel context.CancelFunc
 }
 
@@ -667,7 +687,7 @@ func startFrpcProcesses(frpc string, nodes []nodeInfo, node2iniContent map[strin
 	ctx, cancel := context.WithCancel(context.Background())
 
 	manager := &FrpcManager{
-		done: make(chan struct{}),
+		done:   make(chan struct{}),
 		cancel: cancel,
 	}
 

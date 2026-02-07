@@ -3,8 +3,11 @@
 package launcher
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -86,7 +89,9 @@ func runGUI() error {
 		}
 		node2iniContent := map[string]string{}
 		node2proxies := map[string][]string{}
+		nodeByName := map[string]nodeInfo{}
 		for _, node := range nodes {
+			nodeByName[node.Name] = node
 			iniContent, err := downloadFrpcIni(node, info.Username, info.Password)
 			if err != nil {
 				continue
@@ -124,6 +129,9 @@ func runGUI() error {
 		var countdownStop chan struct{}
 		countdownLabel := widget.NewLabel("")
 		countdownLabel.TextStyle = fyne.TextStyle{Bold: true}
+		var statsStop chan struct{}
+		var statsTicker *time.Ticker
+		lastUpdateLabel := widget.NewLabel("最後更新: -")
 		getSelected := func() []selection {
 			var selected []selection
 			for node, m := range checked {
@@ -136,13 +144,174 @@ func runGUI() error {
 			return selected
 		}
 
+		type proxyCard struct {
+			node           string
+			proxy          string
+			protocol       string
+			localPort      string
+			localIP        string
+			nodeIP         string
+			statusLabel    *widget.Label
+			addrLabel      *widget.Label
+			trafficLabel   *widget.Label
+			connsLabel     *widget.Label
+			lastStartLabel *widget.Label
+			remoteAddr     string
+		}
+
+		formatTraffic := func(bytes int64) string {
+			if bytes < 1024 {
+				return fmt.Sprintf("%d B", bytes)
+			}
+			kb := float64(bytes) / 1024.0
+			if kb < 1024 {
+				return fmt.Sprintf("%.2f KB", kb)
+			}
+			mb := kb / 1024.0
+			if mb < 1024 {
+				return fmt.Sprintf("%.2f MB", mb)
+			}
+			gb := mb / 1024.0
+			return fmt.Sprintf("%.2f GB", gb)
+		}
+		setCardText := func(ref *proxyCard, statusText, remote, trafficText, connsText, lastStartText string) {
+			localAddr := ref.localPort
+			if ref.localIP != "" {
+				localAddr = fmt.Sprintf("%s:%s", ref.localIP, ref.localPort)
+			}
+			ref.statusLabel.SetText(fmt.Sprintf("狀態: %s", statusText))
+			ref.addrLabel.SetText(fmt.Sprintf("本地: %s => %s", localAddr, remote))
+			ref.trafficLabel.SetText(fmt.Sprintf("今日流量: %s", trafficText))
+			ref.connsLabel.SetText(fmt.Sprintf("連線數量: %s", connsText))
+			ref.lastStartLabel.SetText(fmt.Sprintf("上次啟動: %s", lastStartText))
+			ref.remoteAddr = remote
+		}
+
+		parseLocalPort := func(iniContent, proxy string) string {
+			if iniContent == "" || proxy == "" {
+				return "-"
+			}
+			inSection := false
+			for _, line := range strings.Split(iniContent, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+					continue
+				}
+				if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+					name := strings.Trim(line, "[]")
+					inSection = name == proxy
+					continue
+				}
+				if inSection && strings.HasPrefix(line, "local_port") {
+					parts := strings.SplitN(line, "=", 2)
+					if len(parts) == 2 {
+						return strings.TrimSpace(parts[1])
+					}
+				}
+			}
+			return "-"
+		}
+		parseLocalIP := func(iniContent, proxy string) string {
+			if iniContent == "" || proxy == "" {
+				return "127.0.0.1"
+			}
+			inSection := false
+			for _, line := range strings.Split(iniContent, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+					continue
+				}
+				if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+					name := strings.Trim(line, "[]")
+					inSection = name == proxy
+					continue
+				}
+				if inSection && strings.HasPrefix(line, "local_ip") {
+					parts := strings.SplitN(line, "=", 2)
+					if len(parts) == 2 {
+						ip := strings.TrimSpace(parts[1])
+						if ip != "" {
+							return ip
+						}
+					}
+				}
+			}
+			return "127.0.0.1"
+		}
+
+		type tunnelStatus struct {
+			Status          string `json:"status"`
+			CurConns        int    `json:"cur_conns"`
+			LastStartTime   string `json:"last_start_time"`
+			TodayTrafficIn  int64  `json:"today_traffic_in"`
+			TodayTrafficOut int64  `json:"today_traffic_out"`
+			RemotePort      *int   `json:"remote_port"`
+		}
+
+		httpClient := &http.Client{Timeout: 5 * time.Second}
+		fetchStatus := func(username, password, nodeName, proxyName, protocol string) (*tunnelStatus, error) {
+			body := map[string]string{
+				"username":   username,
+				"password":   password,
+				"tunnelName": proxyName,
+				"protocol":   protocol,
+				"nodeName":   nodeName,
+			}
+			data, _ := json.Marshal(body)
+			req, err := http.NewRequest("POST", serverURL+"/check_tunnel", bytes.NewReader(data))
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				return nil, fmt.Errorf("status %d", resp.StatusCode)
+			}
+			var out tunnelStatus
+			if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+				return nil, err
+			}
+			return &out, nil
+		}
+
 		list := container.NewVBox()
+		proxyChecks := map[string]*widget.Check{}
 		for _, node := range nodes {
 			proxies := node2proxies[node.Name]
 			if len(proxies) == 0 {
 				continue
 			}
-			list.Add(widget.NewLabelWithStyle(node.Name, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
+			nodeName := node.Name
+			nodeChecks := []*widget.Check{}
+			nodeToggle := widget.NewButton("全選此節點", func() {
+				all := true
+				if _, ok := checked[nodeName]; !ok {
+					checked[nodeName] = map[string]bool{}
+				}
+				for _, p := range proxies {
+					if !checked[nodeName][p] {
+						all = false
+						break
+					}
+				}
+				for i, p := range proxies {
+					target := !all
+					checked[nodeName][p] = target
+					nodeChecks[i].SetChecked(target)
+				}
+				autoStartEligible = false
+				stopAutoStart()
+			})
+			headerRow := container.NewHBox(
+				widget.NewLabelWithStyle(node.Name, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+				layout.NewSpacer(),
+				nodeToggle,
+			)
+			list.Add(headerRow)
 			for _, proxy := range proxies {
 				nodeName := node.Name
 				proxyName := proxy
@@ -157,9 +326,43 @@ func runGUI() error {
 				if checked[nodeName][proxyName] {
 					chk.SetChecked(true)
 				}
+				nodeChecks = append(nodeChecks, chk)
+				proxyChecks[nodeName+"|"+proxyName] = chk
 				list.Add(chk)
 			}
 		}
+
+		selectAllBtn := widget.NewButton("全選", func() {
+			all := true
+			for nodeName, proxies := range node2proxies {
+				for _, p := range proxies {
+					if !checked[nodeName][p] {
+						all = false
+						break
+					}
+				}
+				if !all {
+					break
+				}
+			}
+			for _, node := range nodes {
+				proxies := node2proxies[node.Name]
+				if len(proxies) == 0 {
+					continue
+				}
+				if _, ok := checked[node.Name]; !ok {
+					checked[node.Name] = map[string]bool{}
+				}
+				for _, p := range proxies {
+					checked[node.Name][p] = !all
+					if chk, ok := proxyChecks[node.Name+"|"+p]; ok {
+						chk.SetChecked(!all)
+					}
+				}
+			}
+			autoStartEligible = false
+			stopAutoStart()
+		})
 
 		scroll := container.NewVScroll(list)
 		scroll.SetMinSize(fyne.NewSize(600, 400))
@@ -181,6 +384,10 @@ func runGUI() error {
 		useSelectable := false
 		logContent := container.NewMax(logScroll, logEntryScroll)
 		logEntryScroll.Hide()
+		cardsGrid := container.NewGridWithColumns(2)
+		cardsScroll := container.NewVScroll(cardsGrid)
+		cardsScroll.SetMinSize(fyne.NewSize(600, 220))
+		var cardRefs []*proxyCard
 		var logSegments []widget.RichTextSegment
 		const maxLogLines = 2000
 
@@ -214,6 +421,133 @@ func runGUI() error {
 			})
 		}
 
+		buildCards := func(selected []selection) {
+			cardsGrid.Objects = nil
+			cardRefs = nil
+			for _, sel := range selected {
+				proxyName := sel.Proxy
+				protocol := "tcp"
+				apiName := proxyName
+				if strings.HasSuffix(proxyName, ",udp") {
+					protocol = "udp"
+					apiName = strings.TrimSuffix(proxyName, ",udp")
+				}
+				localPort := "-"
+				localIP := "127.0.0.1"
+				if ini, ok := node2iniContent[sel.Node]; ok {
+					localPort = parseLocalPort(ini, proxyName)
+					localIP = parseLocalIP(ini, proxyName)
+				}
+				nodeIP := ""
+				if n, ok := nodeByName[sel.Node]; ok {
+					nodeIP = n.IP
+				}
+
+				statusLabel := widget.NewLabel("狀態: -")
+				addrLabel := widget.NewLabel("本地: -")
+				trafficLabel := widget.NewLabel("今日流量: -")
+				connsLabel := widget.NewLabel("連線數量: -")
+				lastStartLabel := widget.NewLabel("上次啟動: -")
+				for _, l := range []*widget.Label{statusLabel, addrLabel, trafficLabel, connsLabel, lastStartLabel} {
+					l.Wrapping = fyne.TextWrapWord
+				}
+				cardRef := &proxyCard{
+					localPort:      localPort,
+					localIP:        localIP,
+					statusLabel:    statusLabel,
+					addrLabel:      addrLabel,
+					trafficLabel:   trafficLabel,
+					connsLabel:     connsLabel,
+					lastStartLabel: lastStartLabel,
+				}
+				copyBtn := widget.NewButton("複製遠端IP", func() {
+					if cardRef.remoteAddr == "" || cardRef.remoteAddr == "-" || cardRef.remoteAddr == "N/A" {
+						w.Clipboard().SetContent("")
+						return
+					}
+					w.Clipboard().SetContent(cardRef.remoteAddr)
+				})
+				setCardText(cardRef, "-", "-", "-", "-", "-")
+
+				content := container.NewVBox(statusLabel, addrLabel, trafficLabel, connsLabel, lastStartLabel, copyBtn)
+				card := widget.NewCard(proxyName, sel.Node, content)
+				cardsGrid.Add(card)
+				cardRef.node = sel.Node
+				cardRef.proxy = apiName
+				cardRef.protocol = protocol
+				cardRef.nodeIP = nodeIP
+				cardRefs = append(cardRefs, cardRef)
+			}
+			cardsGrid.Refresh()
+		}
+
+		refreshStats := func() {
+			refs := append([]*proxyCard(nil), cardRefs...)
+			for _, ref := range refs {
+				refCopy := ref
+				status, err := fetchStatus(info.Username, info.Password, refCopy.node, refCopy.proxy, refCopy.protocol)
+				runOnMain(func() {
+					if err != nil || status == nil {
+						setCardText(refCopy, "取得失敗", "N/A", "N/A", "N/A", "N/A")
+						return
+					}
+					statusText := localizeTunnelStatus(status.Status)
+					remoteHost := refCopy.nodeIP
+					if remoteHost == "" {
+						remoteHost = refCopy.node
+					}
+					remote := "N/A"
+					if status.RemotePort != nil {
+						remote = fmt.Sprintf("%s:%d", remoteHost, *status.RemotePort)
+					}
+					trafficText := fmt.Sprintf("入 %s / 出 %s", formatTraffic(status.TodayTrafficIn), formatTraffic(status.TodayTrafficOut))
+					connsText := fmt.Sprintf("%d", status.CurConns)
+					last := status.LastStartTime
+					if last == "" {
+						last = "N/A"
+					}
+					setCardText(refCopy, statusText, remote, trafficText, connsText, last)
+				})
+			}
+			runOnMain(func() {
+				lastUpdateLabel.SetText("最後更新: " + time.Now().Format("15:04:05"))
+			})
+		}
+
+		startStats := func() {
+			if statsTicker != nil {
+				return
+			}
+			stopCh := make(chan struct{})
+			ticker := time.NewTicker(10 * time.Second)
+			statsStop = stopCh
+			statsTicker = ticker
+			refreshStats()
+			go func(stopCh chan struct{}, ticker *time.Ticker) {
+				for {
+					select {
+					case <-ticker.C:
+						refreshStats()
+					case <-stopCh:
+						return
+					}
+				}
+			}(stopCh, ticker)
+		}
+
+		stopStats := func() {
+			ticker := statsTicker
+			stopCh := statsStop
+			statsTicker = nil
+			statsStop = nil
+			if ticker != nil {
+				ticker.Stop()
+			}
+			if stopCh != nil {
+				close(stopCh)
+			}
+		}
+
 		var selectionPage fyne.CanvasObject
 		var logPage fyne.CanvasObject
 
@@ -226,6 +560,11 @@ func runGUI() error {
 				manager = nil
 				appendLog("系統", "所有 frpc 已停止")
 			}
+			stopStats()
+			cardRefs = nil
+			cardsGrid.Objects = nil
+			cardsGrid.Refresh()
+			lastUpdateLabel.SetText("最後更新: -")
 		}
 
 		logout := func() {
@@ -309,6 +648,7 @@ func runGUI() error {
 				}
 				return
 			}
+			buildCards(selected)
 			info.Selected = selected
 			if err := os.MkdirAll(infoDir, 0755); err != nil {
 				dialog.ShowError(err, w)
@@ -336,6 +676,7 @@ func runGUI() error {
 			manager = m
 			mu.Unlock()
 			appendLog("系統", "所有 frpc 已啟動")
+			startStats()
 			if stopBtn != nil {
 				stopBtn.SetText("停止")
 			}
@@ -372,7 +713,7 @@ func runGUI() error {
 		logoutBtn := widget.NewButton("登出", logout)
 
 		headerSubtitle := countdownLabel
-		actions := container.NewHBox(startBtn, layout.NewSpacer(), widget.NewButton("登出", logout))
+		actions := container.NewHBox(startBtn, selectAllBtn, layout.NewSpacer(), widget.NewButton("登出", logout))
 		selectionPage = container.NewBorder(
 			container.NewVBox(buildHeaderWithSubtitle("選擇代理", headerSubtitle), actions),
 			nil,
@@ -396,12 +737,18 @@ func runGUI() error {
 		})
 		copyBtn := widget.NewButton("複製日誌", copyLogs)
 		logActions := container.NewHBox(backBtn, stopBtn, layout.NewSpacer(), selectableToggle, copyBtn, logoutBtn)
+		cardsTitle := widget.NewLabelWithStyle("啟用中的代理", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+		cardsPanel := container.NewBorder(container.NewHBox(cardsTitle, layout.NewSpacer(), lastUpdateLabel), nil, nil, nil, cardsScroll)
+		logTitle := widget.NewLabelWithStyle("日誌輸出", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+		logPanel := container.NewBorder(logTitle, nil, nil, nil, logContent)
+		split := container.NewVSplit(cardsPanel, logPanel)
+		split.SetOffset(0.5)
 		logPage = container.NewBorder(
-			container.NewVBox(buildHeader("日誌輸出", ""), logActions),
+			container.NewVBox(buildHeader("啟動監控", ""), logActions),
 			nil,
 			nil,
 			nil,
-			logContent,
+			split,
 		)
 		w.SetContent(container.NewPadded(selectionPage))
 		autoStartEligible = len(info.Selected) > 0
@@ -464,6 +811,20 @@ func logStyleForLine(line string) widget.RichTextStyle {
 	}
 	style.ColorName = theme.ColorNameForeground
 	return style
+}
+
+func localizeTunnelStatus(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "online":
+		return "在線"
+	case "offline":
+		return "離線"
+	default:
+		if s == "" {
+			return "-"
+		}
+		return s
+	}
 }
 
 func loadInfoNoPrompt(path string) (infoFileData, error) {
