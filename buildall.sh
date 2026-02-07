@@ -21,8 +21,21 @@ if ! grep -q "^\\.DS_Store$" .gitignore; then
 fi
 
 "$GO20" mod tidy
+
+# Fyne GUI cannot be reliably cross-compiled for every OS/arch in one host env.
+# Build all targets as nogui first, then overwrite host target with GUI build.
 export GOFLAGS="-tags=nogui"
 PATH="/opt/homebrew/opt/go@1.20/bin:$PATH" make -f Makefile.cross-compiles
+
+unset GOFLAGS
+HOST_OS="$("$GO20" env GOOS)"
+HOST_ARCH="$("$GO20" env GOARCH)"
+HOST_OUT="$ROOT/release/taiwanfrp_${HOST_OS}_${HOST_ARCH}"
+if [ "$HOST_OS" = "windows" ]; then
+  HOST_OUT="${HOST_OUT}.exe"
+fi
+echo "Build host GUI binary: ${HOST_OS}-${HOST_ARCH}"
+CGO_ENABLED=1 "$GO20" build -o "$HOST_OUT" ./cmd/frpc
 
 git add .
 read -r -p "Commit message: " MSG
