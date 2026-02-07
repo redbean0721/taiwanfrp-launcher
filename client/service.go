@@ -617,7 +617,7 @@ func (svr *Service) login() (conn net.Conn, cm *ConnectionManager, err error) {
 	xl.AppendPrefix(svr.runID)
 
 	svr.serverUDPPort = loginRespMsg.ServerUDPPort
-	xl.Info("鄧入伺服器成功, 取得run id [%s], 伺服器udp端口 [%d]", loginRespMsg.RunID, loginRespMsg.ServerUDPPort)
+	xl.Info("登入服器成功, 取得run id [%s], 伺服器udp端口 [%d]", loginRespMsg.RunID, loginRespMsg.ServerUDPPort)
 	return
 }
 

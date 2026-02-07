@@ -150,8 +150,8 @@ func Run(args []string) error {
 			idx2np, _ := buildIndex(nodes, node2proxies)
 			printProxyListInOrder(nodes, node2proxies, idx2np, info.Selected)
 			fmt.Println("請選擇要啟動的代理(前面數字代碼)（多選用逗號分隔，輸入數字切換選擇，all 全選(新手建議)，stop 啟動）")
-			fmt.Println("10 秒內輸入代理編號來新增啟用或停用，或按enter直接啟動，或輸入logout來登出，若10秒沒有反應將直接啟動...")
-			if input, ok := readLineWithTimeout(10 * time.Second); ok && strings.TrimSpace(input) != "" {
+			fmt.Println("10 秒內輸入代理編號來新增啟用或停用，或按enter直接啟動，或輸入logout來登出。")
+			if input, ok := readLineWithCountdown(10*time.Second, "若沒有操作，將在"); ok && strings.TrimSpace(input) != "" {
 				edit = true
 				firstInput = input
 			}
@@ -472,18 +472,42 @@ func proxyExists(node2proxies map[string][]string, node, proxy string) bool {
 	return false
 }
 
-func readLineWithTimeout(timeout time.Duration) (string, bool) {
+func readLineWithCountdown(timeout time.Duration, prefix string) (string, bool) {
 	ch := make(chan string, 1)
 	go func() {
 		reader := bufio.NewReader(os.Stdin)
 		text, _ := reader.ReadString('\n')
 		ch <- strings.TrimSpace(text)
 	}()
-	select {
-	case text := <-ch:
-		return text, true
-	case <-time.After(timeout):
+
+	remaining := int(timeout.Seconds())
+	if remaining <= 0 {
 		return "", false
+	}
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	printCountdown := func(sec int) {
+		msg := fmt.Sprintf("%s %d 秒後自動啟動...", prefix, sec)
+		// Use carriage return to update in-place instead of printing a new line every second.
+		fmt.Printf("\r%-64s", msg)
+	}
+	printCountdown(remaining)
+
+	for {
+		select {
+		case text := <-ch:
+			fmt.Print("\r\033[K")
+			return text, true
+		case <-ticker.C:
+			remaining--
+			if remaining <= 0 {
+				fmt.Print("\r\033[K")
+				fmt.Println("倒數結束，自動啟動。")
+				return "", false
+			}
+			printCountdown(remaining)
+		}
 	}
 }
 
