@@ -568,7 +568,7 @@ func runGUI() error {
 		}
 
 		logout := func() {
-			_ = os.Remove(infoFile)
+			_ = os.RemoveAll(infoDir)
 			stopAutoStart()
 			stopAll()
 			runLoginScreen(w, status, usernameEntry, passwordEntry, loginBtn)

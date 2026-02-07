@@ -279,7 +279,7 @@ func promptAndSaveInfo(path string) (infoFileData, error) {
 	if err := saveInfo(path, info); err != nil {
 		return info, err
 	}
-	fmt.Println("已經保存登入資料，如要登出請刪除info.json。")
+	fmt.Println("已經保存登入資料，如要登出請刪除 lib 資料夾。")
 	return info, nil
 }
 
@@ -582,7 +582,7 @@ func selectProxiesInOrder(nodes []nodeInfo, node2proxies map[string][]string, ex
 }
 
 func logoutAndRestart() error {
-	_ = os.Remove(infoFile)
+	_ = os.RemoveAll(infoDir)
 	fmt.Println("已登出，請重新登入。")
 	return ErrLogout
 }
