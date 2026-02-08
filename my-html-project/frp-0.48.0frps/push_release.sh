@@ -39,6 +39,69 @@ if [ -z "${VERSION_FILE_SUFFIX}" ]; then
   exit 1
 fi
 
+ANDROID_API_LEVEL="${ANDROID_API_LEVEL:-21}"
+ANDROID_ALLOW_SKIP="${ANDROID_ALLOW_SKIP:-0}"
+
+find_ndk_clang() {
+  local target_triple="$1"
+  local clang_name="${target_triple}${ANDROID_API_LEVEL}-clang"
+  local ndk_root prebuilt_dir cc_path version_dir
+  local -a ndk_roots=()
+
+  if command -v "$clang_name" >/dev/null 2>&1; then
+    command -v "$clang_name"
+    return 0
+  fi
+
+  if [ -n "${ANDROID_NDK_HOME:-}" ]; then
+    ndk_roots+=("${ANDROID_NDK_HOME}")
+  fi
+  if [ -n "${ANDROID_NDK_ROOT:-}" ]; then
+    ndk_roots+=("${ANDROID_NDK_ROOT}")
+  fi
+  if [ -d "$HOME/Library/Android/sdk/ndk" ]; then
+    for version_dir in "$HOME/Library/Android/sdk/ndk"/*; do
+      [ -d "$version_dir" ] || continue
+      ndk_roots+=("$version_dir")
+    done
+  fi
+  if [ -d "$HOME/Library/Android/sdk/ndk-bundle" ]; then
+    ndk_roots+=("$HOME/Library/Android/sdk/ndk-bundle")
+  fi
+  if [ -d "/opt/homebrew/share/android-ndk" ]; then
+    ndk_roots+=("/opt/homebrew/share/android-ndk")
+  fi
+  if [ -d "/usr/local/share/android-ndk" ]; then
+    ndk_roots+=("/usr/local/share/android-ndk")
+  fi
+  if [ -d "/opt/homebrew/Caskroom/android-ndk" ]; then
+    for version_dir in /opt/homebrew/Caskroom/android-ndk/*; do
+      [ -d "$version_dir" ] || continue
+      for ndk_root in "$version_dir"/*; do
+        [ -d "$ndk_root" ] || continue
+        ndk_roots+=("$ndk_root")
+      done
+    done
+  fi
+
+  for ndk_root in "${ndk_roots[@]}"; do
+    if [ ! -d "$ndk_root/toolchains/llvm/prebuilt" ]; then
+      continue
+    fi
+    prebuilt_dir="$(find "$ndk_root/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+    if [ -z "$prebuilt_dir" ]; then
+      continue
+    fi
+    cc_path="$prebuilt_dir/bin/$clang_name"
+    if [ -x "$cc_path" ]; then
+      echo "$cc_path"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 add_version_suffix() {
   local file="$1"
   local dir base stem ext new_name
@@ -100,6 +163,52 @@ for target in "${os_archs[@]}"; do
     PATH="/opt/homebrew/opt/go@1.20/bin:$PATH" \
     "$GO20" build -trimpath -ldflags "-s -w" -o "$out" ./cmd/frps
 done
+
+# Build Android targets
+unset CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_LDFLAGS LDFLAGS
+ANDROID_SKIPPED=()
+for android_arch in arm64 arm amd64; do
+  out="./release/frps_android_${android_arch}"
+  echo "Build frps android-${android_arch}..."
+  if [ "$android_arch" = "arm64" ]; then
+    CGO_ENABLED=0 GOOS=android GOARCH="$android_arch" \
+      PATH="/opt/homebrew/opt/go@1.20/bin:$PATH" \
+      "$GO20" build -trimpath -ldflags "-s -w" -o "$out" ./cmd/frps
+    continue
+  fi
+
+  if [ "$android_arch" = "arm" ]; then
+    NDK_CC="$(find_ndk_clang armv7a-linux-androideabi || true)"
+    if [ -z "$NDK_CC" ]; then
+      echo "Skip frps android-arm: missing armv7a-linux-androideabi${ANDROID_API_LEVEL}-clang"
+      ANDROID_SKIPPED+=("android-arm")
+      continue
+    fi
+    CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 CC="$NDK_CC" \
+      PATH="/opt/homebrew/opt/go@1.20/bin:$PATH" \
+      "$GO20" build -trimpath -ldflags "-s -w" -o "$out" ./cmd/frps
+  elif [ "$android_arch" = "amd64" ]; then
+    NDK_CC="$(find_ndk_clang x86_64-linux-android || true)"
+    if [ -z "$NDK_CC" ]; then
+      echo "Skip frps android-amd64: missing x86_64-linux-android${ANDROID_API_LEVEL}-clang"
+      ANDROID_SKIPPED+=("android-amd64")
+      continue
+    fi
+    CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC="$NDK_CC" \
+      PATH="/opt/homebrew/opt/go@1.20/bin:$PATH" \
+      "$GO20" build -trimpath -ldflags "-s -w" -o "$out" ./cmd/frps
+  fi
+done
+
+if [ "${#ANDROID_SKIPPED[@]}" -gt 0 ]; then
+  echo "Android targets not built: ${ANDROID_SKIPPED[*]}"
+  echo "Install Android NDK and export ANDROID_NDK_HOME, or add NDK clang to PATH."
+  echo "If you want to continue without these targets, run: ANDROID_ALLOW_SKIP=1 ./push_release.sh"
+  if [ "$ANDROID_ALLOW_SKIP" != "1" ]; then
+    echo "Abort before commit: Android artifacts are incomplete."
+    exit 1
+  fi
+fi
 
 # Add version suffix to artifacts
 if [ -d "$ROOT/release" ]; then
