@@ -38,9 +38,10 @@ var ErrBypass = errors.New("launcher bypassed")
 var ErrLogout = errors.New("launcher logout")
 
 type infoFileData struct {
-	Username string      `json:"username"`
-	Password string      `json:"password"`
-	Selected []selection `json:"selected"`
+	Username   string      `json:"username"`
+	Password   string      `json:"password"`
+	DNSServers []string    `json:"dns_servers,omitempty"`
+	Selected   []selection `json:"selected"`
 }
 
 type legacyInfo struct {
@@ -70,6 +71,9 @@ type nodeInfo struct {
 // Run executes the launcher flow. It returns ErrBypass if the caller should
 // continue to the normal frpc execution path.
 func Run(args []string) error {
+	if err := configureLauncherDNS(nil); err != nil {
+		return fmt.Errorf("DNS 初始化失敗: %w", err)
+	}
 	if exitCode := parseArgs(args); exitCode != -1 {
 		if exitCode == 0 {
 			return ErrBypass
@@ -98,6 +102,9 @@ func Run(args []string) error {
 		info, err := loadInfoIfExists(infoFile)
 		if err != nil {
 			return err
+		}
+		if err := configureLauncherDNS(info.DNSServers); err != nil {
+			return fmt.Errorf("dns_servers 設定錯誤: %w", err)
 		}
 
 		if err := verifyLogin(info); err != nil {
@@ -260,7 +267,7 @@ func promptAndSaveInfo(path string) (infoFileData, error) {
 	if err := saveInfo(path, info); err != nil {
 		return info, err
 	}
-	fmt.Println("已經保存登入資料，如要登出請刪除info.json。")
+	fmt.Println("已經保存登入資料，如要登出請刪除 lib 資料夾。")
 	return info, nil
 }
 
@@ -326,7 +333,7 @@ func verifyLogin(info infoFileData) error {
 	body := fmt.Sprintf(`{"username":"%s","password":"%s"}`, info.Username, info.Password)
 	resp, err := http.Post(serverURL+"/login", "application/json", strings.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("登入失敗，檢查網路連接")
+		return fmt.Errorf("登入失敗，網路錯誤: %v (DNS: %s)", err, dnsResolverDebugInfo())
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusOK {
@@ -335,17 +342,17 @@ func verifyLogin(info infoFileData) error {
 	if resp.StatusCode == http.StatusBadRequest {
 		return fmt.Errorf("登入失敗，無效的帳號密碼")
 	}
-	return fmt.Errorf("登入失敗，檢查網路連接")
+	return fmt.Errorf("登入失敗，HTTP %d (DNS: %s)", resp.StatusCode, dnsResolverDebugInfo())
 }
 
 func fetchNodes() ([]nodeInfo, error) {
 	resp, err := http.Get(serverURL + "/nodes.json")
 	if err != nil {
-		return nil, fmt.Errorf("無法取得節點列表，請檢查網路")
+		return nil, fmt.Errorf("無法取得節點列表: %v (DNS: %s)", err, dnsResolverDebugInfo())
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("無法取得節點列表，請檢查網路")
+		return nil, fmt.Errorf("無法取得節點列表，HTTP %d (DNS: %s)", resp.StatusCode, dnsResolverDebugInfo())
 	}
 	var out nodesResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -363,7 +370,7 @@ func downloadFrpcIni(node nodeInfo, username, password string) (string, error) {
 	req.SetBasicAuth(username, password)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("下載 frpc.ini 失敗: %v (DNS: %s)", err, dnsResolverDebugInfo())
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -539,7 +546,7 @@ func selectProxiesInOrder(nodes []nodeInfo, node2proxies map[string][]string, ex
 }
 
 func logoutAndRestart() error {
-	_ = os.Remove(infoFile)
+	_ = os.RemoveAll(infoDir)
 	fmt.Println("已登出，請重新登入。")
 	return ErrLogout
 }

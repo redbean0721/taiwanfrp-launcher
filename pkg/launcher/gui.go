@@ -59,6 +59,9 @@ func runGUI() error {
 	status := widget.NewLabel("請登入")
 
 	info, _ := loadInfoNoPrompt(infoFile)
+	if err := configureLauncherDNS(info.DNSServers); err != nil {
+		return fmt.Errorf("dns_servers 設定錯誤: %w", err)
+	}
 	usernameEntry := widget.NewEntry()
 	usernameEntry.SetText(info.Username)
 	passwordEntry := widget.NewPasswordEntry()
@@ -764,6 +767,11 @@ func runGUI() error {
 		}
 		info.Username = username
 		info.Password = password
+		if err := configureLauncherDNS(info.DNSServers); err != nil {
+			status.SetText("dns_servers 設定錯誤")
+			dialog.ShowError(err, w)
+			return
+		}
 		if err := verifyLogin(info); err != nil {
 			status.SetText("登入失敗")
 			dialog.ShowError(err, w)
