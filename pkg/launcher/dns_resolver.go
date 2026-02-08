@@ -75,6 +75,28 @@ func dnsResolverDebugInfo() string {
 	return fmt.Sprintf("%s (%s)", dnsSource, strings.Join(dnsTried, ", "))
 }
 
+func launcherDNSServerForChild() string {
+	dnsMu.RLock()
+	defer dnsMu.RUnlock()
+	if len(dnsTried) == 0 {
+		return ""
+	}
+
+	for _, server := range dnsTried {
+		host, _, err := net.SplitHostPort(server)
+		if err != nil {
+			continue
+		}
+		host = strings.Trim(host, "[]")
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			continue
+		}
+		return server
+	}
+
+	return dnsTried[0]
+}
+
 func pickDNSServers(override []string) ([]string, string, []string, error) {
 	if len(override) > 0 {
 		s, warns, err := normalizeDNSServers(override)

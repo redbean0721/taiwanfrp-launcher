@@ -673,6 +673,7 @@ func startFrpcProcesses(frpc string, nodes []nodeInfo, node2iniContent map[strin
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	childDNSServer := launcherDNSServerForChild()
 
 	manager := &FrpcManager{
 		done:   make(chan struct{}),
@@ -695,7 +696,11 @@ func startFrpcProcesses(frpc string, nodes []nodeInfo, node2iniContent map[strin
 		}
 
 		cmd := exec.CommandContext(ctx, frpc, "-c", dstIni)
-		cmd.Env = append(os.Environ(), "TAIWANFRP_SKIP_LAUNCHER=1")
+		env := append(os.Environ(), "TAIWANFRP_SKIP_LAUNCHER=1")
+		if childDNSServer != "" {
+			env = append(env, "TAIWANFRP_DNS_SERVER="+childDNSServer)
+		}
+		cmd.Env = env
 		stdout, _ := cmd.StdoutPipe()
 		stderr, _ := cmd.StderrPipe()
 

@@ -58,3 +58,37 @@ func TestNormalizeDNSServersAllInvalid(t *testing.T) {
 		t.Fatalf("expected error when all dns servers are invalid")
 	}
 }
+
+func TestLauncherDNSServerForChildPrefersNonLoopback(t *testing.T) {
+	dnsMu.Lock()
+	old := append([]string(nil), dnsTried...)
+	dnsTried = []string{"[::1]:53", "127.0.0.1:53", "8.8.8.8:53"}
+	dnsMu.Unlock()
+	defer func() {
+		dnsMu.Lock()
+		dnsTried = old
+		dnsMu.Unlock()
+	}()
+
+	got := launcherDNSServerForChild()
+	if got != "8.8.8.8:53" {
+		t.Fatalf("launcherDNSServerForChild() = %q, want %q", got, "8.8.8.8:53")
+	}
+}
+
+func TestLauncherDNSServerForChildFallbackFirst(t *testing.T) {
+	dnsMu.Lock()
+	old := append([]string(nil), dnsTried...)
+	dnsTried = []string{"not-a-valid-hostport"}
+	dnsMu.Unlock()
+	defer func() {
+		dnsMu.Lock()
+		dnsTried = old
+		dnsMu.Unlock()
+	}()
+
+	got := launcherDNSServerForChild()
+	if got != "not-a-valid-hostport" {
+		t.Fatalf("launcherDNSServerForChild() = %q, want %q", got, "not-a-valid-hostport")
+	}
+}

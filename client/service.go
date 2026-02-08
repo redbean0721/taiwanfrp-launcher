@@ -127,8 +127,11 @@ func (svr *Service) Run() error {
 	}
 
 	// set custom DNSServer
-	if svr.cfg.DNSServer != "" {
-		dnsAddr := svr.cfg.DNSServer
+	dnsAddr := strings.TrimSpace(svr.cfg.DNSServer)
+	if dnsAddr == "" {
+		dnsAddr = strings.TrimSpace(os.Getenv("TAIWANFRP_DNS_SERVER"))
+	}
+	if dnsAddr != "" {
 		if _, _, err := net.SplitHostPort(dnsAddr); err != nil {
 			dnsAddr = net.JoinHostPort(dnsAddr, "53")
 		}
@@ -136,7 +139,8 @@ func (svr *Service) Run() error {
 		net.DefaultResolver = &net.Resolver{
 			PreferGo: true,
 			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				return net.Dial("udp", dnsAddr)
+				dialer := &net.Dialer{}
+				return dialer.DialContext(ctx, "udp", dnsAddr)
 			},
 		}
 	}
