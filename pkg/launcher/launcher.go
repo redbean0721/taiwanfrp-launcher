@@ -467,11 +467,38 @@ func readLineWithTimeout(timeout time.Duration) (string, bool) {
 		text, _ := reader.ReadString('\n')
 		ch <- strings.TrimSpace(text)
 	}()
-	select {
-	case text := <-ch:
-		return text, true
-	case <-time.After(timeout):
-		return "", false
+
+	secondsLeft := int(timeout / time.Second)
+	showCountdown := secondsLeft > 0
+	if showCountdown {
+		fmt.Printf("\r\033[2K%d秒後啟動代理...", secondsLeft)
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case text := <-ch:
+			if showCountdown {
+				fmt.Println()
+			}
+			return text, true
+		case <-ticker.C:
+			if showCountdown {
+				secondsLeft--
+				if secondsLeft > 0 {
+					fmt.Printf("\r\033[2K%d秒後啟動代理...", secondsLeft)
+				}
+			}
+		case <-timer.C:
+			if showCountdown {
+				fmt.Println()
+			}
+			return "", false
+		}
 	}
 }
 
