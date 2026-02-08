@@ -15,12 +15,15 @@
 package main
 
 import (
+	"fmt"
 	"math/rand"
+	"os"
 	"time"
 
 	"github.com/fatedier/golib/crypto"
 
 	_ "github.com/fatedier/frp/assets/frps"
+	"github.com/fatedier/frp/pkg/launcher"
 	_ "github.com/fatedier/frp/pkg/metrics"
 )
 
@@ -28,6 +31,15 @@ func main() {
 	crypto.DefaultSalt = "frp"
 	// TODO: remove this when we drop support for go1.19
 	rand.Seed(time.Now().UnixNano())
+
+	if os.Getenv("TAIWANFRP_SKIP_LAUNCHER") != "1" {
+		if err := launcher.Run(os.Args); err == nil {
+			return
+		} else if err != launcher.ErrBypass {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	Execute()
 }
