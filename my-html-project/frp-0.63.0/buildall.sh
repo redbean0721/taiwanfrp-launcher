@@ -238,34 +238,50 @@ if [ -d "$DESKTOP_RELEASE" ]; then
 fi
 mv "$ROOT/release" "/Users/zhangqiwei/Desktop/"
 
-read -r -p "Create/update release tag ${VERSION_TAG}? [y/N]: " CREATE_TAG
-if [[ "${CREATE_TAG}" =~ ^[Yy]$ ]]; then
-  git -C "$GIT_TOP" tag -f "$VERSION_TAG"
-  if ! git -C "$GIT_TOP" push -f "$REMOTE" "$VERSION_TAG"; then
-    echo "Tag push failed once. Retry with HTTP/1.1..."
-    git -C "$GIT_TOP" config http.version HTTP/1.1
-    git -C "$GIT_TOP" push -f "$REMOTE" "$VERSION_TAG"
-  fi
-  if command -v gh >/dev/null 2>&1; then
-    if gh auth status >/dev/null 2>&1; then
-      if gh release view "$VERSION_TAG" --repo "$REPO" >/dev/null 2>&1; then
-        gh release upload "$VERSION_TAG" /Users/zhangqiwei/Desktop/release/* \
-          --repo "$REPO" \
-          --clobber
+read -r -p "Create new release ${VERSION_TAG}? [Y/n]: " CREATE_TAG
+if [[ -z "${CREATE_TAG}" || "${CREATE_TAG}" =~ ^[Yy]$ ]]; then
+  SHOULD_CREATE_RELEASE="1"
+  RECREATE_RELEASE="0"
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    if gh release view "$VERSION_TAG" --repo "$REPO" >/dev/null 2>&1; then
+      echo "Release ${VERSION_TAG} already exists on ${REPO}."
+      read -r -p "Delete old release/tag and recreate? [y/N]: " RECREATE_INPUT
+      if [[ "${RECREATE_INPUT}" =~ ^[Yy]$ ]]; then
+        RECREATE_RELEASE="1"
       else
+        SHOULD_CREATE_RELEASE="0"
+        echo "Skip release creation. Use a new version tag to create a new release."
+      fi
+    fi
+  fi
+
+  if [ "$SHOULD_CREATE_RELEASE" = "1" ]; then
+    if [ "$RECREATE_RELEASE" = "1" ]; then
+      gh release delete "$VERSION_TAG" --repo "$REPO" --yes --cleanup-tag || true
+      git -C "$GIT_TOP" tag -d "$VERSION_TAG" >/dev/null 2>&1 || true
+    fi
+
+    git -C "$GIT_TOP" tag -f "$VERSION_TAG"
+    if ! git -C "$GIT_TOP" push -f "$REMOTE" "$VERSION_TAG"; then
+      echo "Tag push failed once. Retry with HTTP/1.1..."
+      git -C "$GIT_TOP" config http.version HTTP/1.1
+      git -C "$GIT_TOP" push -f "$REMOTE" "$VERSION_TAG"
+    fi
+    if command -v gh >/dev/null 2>&1; then
+      if gh auth status >/dev/null 2>&1; then
         gh release create "$VERSION_TAG" /Users/zhangqiwei/Desktop/release/* \
           --repo "$REPO" \
           --title "$VERSION_TAG" \
           --notes "taiwanfrp client $VERSION_TAG"
+      else
+        echo "gh CLI installed but not authenticated."
+        echo "Run: gh auth login -h github.com"
+        echo "Then rerun release creation."
       fi
     else
-      echo "gh CLI installed but not authenticated."
-      echo "Run: gh auth login -h github.com"
-      echo "Then rerun release upload/create."
+      echo "gh CLI not found. Install with: brew install gh"
+      echo "Then run: gh auth login"
     fi
-  else
-    echo "gh CLI not found. Install with: brew install gh"
-    echo "Then run: gh auth login"
   fi
 fi
 
