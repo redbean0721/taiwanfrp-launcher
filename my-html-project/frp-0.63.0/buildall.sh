@@ -215,14 +215,18 @@ else
   git -C "$GIT_TOP" -c status.showUntrackedFiles=no commit -m "$MSG"
 fi
 
-push_args=()
-if [ "$PUSH_FORCE" = "1" ]; then
-  push_args+=("-f")
-fi
-if ! git -C "$GIT_TOP" push "${push_args[@]}" "$REMOTE" "HEAD:$BRANCH"; then
+push_branch() {
+  if [ "$PUSH_FORCE" = "1" ]; then
+    git -C "$GIT_TOP" push -f "$REMOTE" "HEAD:$BRANCH"
+  else
+    git -C "$GIT_TOP" push "$REMOTE" "HEAD:$BRANCH"
+  fi
+}
+
+if ! push_branch; then
   echo "Push failed once. Retry with HTTP/1.1..."
   git -C "$GIT_TOP" config http.version HTTP/1.1
-  git -C "$GIT_TOP" push "${push_args[@]}" "$REMOTE" "HEAD:$BRANCH"
+  push_branch
 fi
 
 DESKTOP_RELEASE="/Users/zhangqiwei/Desktop/release"
