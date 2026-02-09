@@ -6,7 +6,7 @@ GO_BIN="${GO_BIN:-go}"
 REMOTE="${REMOTE:-redbean}"
 REMOTE_URL="${REMOTE_URL:-https://github.com/redbean0721/taiwanfrp-launcher.git}"
 REPO="${REPO:-redbean0721/taiwanfrp-launcher}"
-PUSH_FORCE="${PUSH_FORCE:-0}"
+PUSH_FORCE="${PUSH_FORCE:-1}"
 
 cd "$ROOT"
 
@@ -217,8 +217,10 @@ fi
 
 push_branch() {
   if [ "$PUSH_FORCE" = "1" ]; then
+    echo "Push mode: force (overwrite remote branch history if needed)"
     git -C "$GIT_TOP" push -f "$REMOTE" "HEAD:$BRANCH"
   else
+    echo "Push mode: fast-forward only"
     git -C "$GIT_TOP" push "$REMOTE" "HEAD:$BRANCH"
   fi
 }
