@@ -3,11 +3,32 @@ set -euo pipefail
 
 ROOT="/Users/zhangqiwei/Desktop/github/my-html-project/frp-0.63.0"
 GO_BIN="${GO_BIN:-go}"
-BRANCH="feature/golang-rewrite"
-REMOTE="origin"
-REPO="redbean0721/taiwanfrp-launcher"
+REMOTE="${REMOTE:-redbean}"
+REMOTE_URL="${REMOTE_URL:-https://github.com/redbean0721/taiwanfrp-launcher.git}"
+REPO="${REPO:-redbean0721/taiwanfrp-launcher}"
+PUSH_FORCE="${PUSH_FORCE:-0}"
 
 cd "$ROOT"
+
+if ! GIT_TOP="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  echo "Not inside a git repository: $ROOT"
+  exit 1
+fi
+
+if [[ "$ROOT" == "$GIT_TOP" ]]; then
+  ROOT_REL="."
+elif [[ "$ROOT" == "$GIT_TOP/"* ]]; then
+  ROOT_REL="${ROOT#$GIT_TOP/}"
+else
+  echo "ROOT ($ROOT) is outside git top-level ($GIT_TOP). Abort."
+  exit 1
+fi
+
+BRANCH="${BRANCH:-feature/golang-rewrite}"
+
+if ! git -C "$GIT_TOP" remote get-url "$REMOTE" >/dev/null 2>&1; then
+  git -C "$GIT_TOP" remote add "$REMOTE" "$REMOTE_URL"
+fi
 
 # Clean macOS junk files
 find "$ROOT" -name ".DS_Store" -delete
@@ -181,14 +202,28 @@ if [ -d "$ROOT/release" ]; then
   done
 fi
 
-git add .
-read -r -p "Commit message: " MSG
-if [ -z "${MSG}" ]; then
-  echo "Commit message cannot be empty. Abort."
-  exit 1
+git -C "$GIT_TOP" add -A -- "$ROOT_REL"
+
+if git -C "$GIT_TOP" diff --cached --quiet -- "$ROOT_REL"; then
+  echo "No tracked file changes under $ROOT_REL. Skip commit."
+else
+  read -r -p "Commit message: " MSG
+  if [ -z "${MSG}" ]; then
+    echo "Commit message cannot be empty. Abort."
+    exit 1
+  fi
+  git -C "$GIT_TOP" -c status.showUntrackedFiles=no commit -m "$MSG"
 fi
-git commit -m "$MSG" || true
-git push -f "$REMOTE" HEAD:"$BRANCH"
+
+push_args=()
+if [ "$PUSH_FORCE" = "1" ]; then
+  push_args+=("-f")
+fi
+if ! git -C "$GIT_TOP" push "${push_args[@]}" "$REMOTE" "HEAD:$BRANCH"; then
+  echo "Push failed once. Retry with HTTP/1.1..."
+  git -C "$GIT_TOP" config http.version HTTP/1.1
+  git -C "$GIT_TOP" push "${push_args[@]}" "$REMOTE" "HEAD:$BRANCH"
+fi
 
 DESKTOP_RELEASE="/Users/zhangqiwei/Desktop/release"
 if [ -d "$DESKTOP_RELEASE" ]; then
@@ -199,13 +234,29 @@ mv "$ROOT/release" "/Users/zhangqiwei/Desktop/"
 
 read -r -p "Create/update release tag ${VERSION_TAG}? [y/N]: " CREATE_TAG
 if [[ "${CREATE_TAG}" =~ ^[Yy]$ ]]; then
-  git tag -f "$VERSION_TAG"
-  git push -f "$REMOTE" "$VERSION_TAG"
+  git -C "$GIT_TOP" tag -f "$VERSION_TAG"
+  if ! git -C "$GIT_TOP" push -f "$REMOTE" "$VERSION_TAG"; then
+    echo "Tag push failed once. Retry with HTTP/1.1..."
+    git -C "$GIT_TOP" config http.version HTTP/1.1
+    git -C "$GIT_TOP" push -f "$REMOTE" "$VERSION_TAG"
+  fi
   if command -v gh >/dev/null 2>&1; then
-    gh release create "$VERSION_TAG" /Users/zhangqiwei/Desktop/release/* \
-      --repo "$REPO" \
-      --title "$VERSION_TAG" \
-      --notes "taiwanfrp client $VERSION_TAG"
+    if gh auth status >/dev/null 2>&1; then
+      if gh release view "$VERSION_TAG" --repo "$REPO" >/dev/null 2>&1; then
+        gh release upload "$VERSION_TAG" /Users/zhangqiwei/Desktop/release/* \
+          --repo "$REPO" \
+          --clobber
+      else
+        gh release create "$VERSION_TAG" /Users/zhangqiwei/Desktop/release/* \
+          --repo "$REPO" \
+          --title "$VERSION_TAG" \
+          --notes "taiwanfrp client $VERSION_TAG"
+      fi
+    else
+      echo "gh CLI installed but not authenticated."
+      echo "Run: gh auth login -h github.com"
+      echo "Then rerun release upload/create."
+    fi
   else
     echo "gh CLI not found. Install with: brew install gh"
     echo "Then run: gh auth login"
