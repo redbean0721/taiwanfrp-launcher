@@ -8,6 +8,8 @@ REMOTE_URL="${REMOTE_URL:-https://github.com/kiwi0712/taiwanfrpserver_client.git
 REPO="${REPO:-kiwi0712/taiwanfrpserver_client}"
 DESKTOP_DIR="${DESKTOP_DIR:-$HOME/Desktop}"
 RUN_TIDY="${RUN_TIDY:-1}"
+PUSH_RETRY="${PUSH_RETRY:-5}"
+PUSH_RETRY_DELAY="${PUSH_RETRY_DELAY:-3}"
 
 if [ -n "${GO_BIN:-}" ] && [ -x "${GO_BIN}" ]; then
   :
@@ -298,6 +300,27 @@ else
   git remote add "$REMOTE" "$REMOTE_URL"
 fi
 
+push_with_retry() {
+  local target_desc="$1"
+  shift
+
+  local attempt=1
+  while [ "$attempt" -le "$PUSH_RETRY" ]; do
+    if git -c http.version=HTTP/1.1 -c http.postBuffer=524288000 push "$@"; then
+      return 0
+    fi
+    if [ "$attempt" -lt "$PUSH_RETRY" ]; then
+      local sleep_secs=$((PUSH_RETRY_DELAY * attempt))
+      echo "Push ${target_desc} failed (attempt ${attempt}/${PUSH_RETRY}), retry in ${sleep_secs}s..."
+      sleep "$sleep_secs"
+    fi
+    attempt=$((attempt + 1))
+  done
+
+  echo "Push ${target_desc} failed after ${PUSH_RETRY} attempts."
+  return 1
+}
+
 git add .
 read -r -p "Commit message: " MSG
 if [ -z "${MSG}" ]; then
@@ -306,7 +329,7 @@ if [ -z "${MSG}" ]; then
 fi
 git commit -m "$MSG" || true
 
-git push -f "$REMOTE" HEAD:"$BRANCH"
+push_with_retry "branch ${BRANCH}" -f "$REMOTE" HEAD:"$BRANCH"
 
 mkdir -p "$DESKTOP_DIR"
 DESKTOP_RELEASE="${DESKTOP_DIR}/release"
@@ -319,7 +342,7 @@ mv "$ROOT/release" "$DESKTOP_DIR/"
 read -r -p "Create/update release tag ${VERSION_TAG}? [y/N]: " CREATE_TAG
 if [[ "${CREATE_TAG}" =~ ^[Yy]$ ]]; then
   git tag -f "$VERSION_TAG"
-  git push -f "$REMOTE" "$VERSION_TAG"
+  push_with_retry "tag ${VERSION_TAG}" -f "$REMOTE" "$VERSION_TAG"
   if command -v gh >/dev/null 2>&1; then
     gh release create "$VERSION_TAG" "${DESKTOP_DIR}"/release/* \
       --repo "$REPO" \
