@@ -172,12 +172,26 @@ export GOFLAGS="-tags=nogui"
 GO_BIN_DIR="$(dirname "$GO_BIN")"
 PATH="${GO_BIN_DIR}:$PATH" make -f Makefile.cross-compiles FRPC_TAGS="frpc nogui"
 
+# Extra 386 targets required by release matrix.
+# Note: darwin/386 is not supported by modern Go toolchains.
+for TARGET in freebsd:386 openbsd:386 linux:386 windows:386; do
+  EXTRA_OS="${TARGET%%:*}"
+  EXTRA_ARCH="${TARGET##*:}"
+  EXTRA_OUT="$ROOT/release/taiwanfrp_${EXTRA_OS}_${EXTRA_ARCH}"
+  if [ "$EXTRA_OS" = "windows" ]; then
+    EXTRA_OUT="${EXTRA_OUT}.exe"
+  fi
+  echo "Build ${EXTRA_OS}-${EXTRA_ARCH} (nogui)..."
+  env CGO_ENABLED=0 GOOS="$EXTRA_OS" GOARCH="$EXTRA_ARCH" \
+    "$GO_BIN" build -trimpath -ldflags "-s -w" -tags "frpc nogui" -o "$EXTRA_OUT" ./cmd/frpc
+done
+
 # Android targets (CLI/nogui only)
 mkdir -p "$ROOT/release"
 # Avoid shell-exported flags affecting Android external linker flow.
 unset CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_LDFLAGS LDFLAGS
 ANDROID_SKIPPED=()
-for ANDROID_ARCH in arm64 arm amd64; do
+for ANDROID_ARCH in arm64 arm amd64 386; do
   ANDROID_OUT="$ROOT/release/taiwanfrp_android_${ANDROID_ARCH}"
   echo "Build android-${ANDROID_ARCH} (nogui)..."
   if [ "$ANDROID_ARCH" = "arm64" ]; then
@@ -205,6 +219,15 @@ for ANDROID_ARCH in arm64 arm amd64; do
       continue
     fi
     env CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC="$NDK_CC" \
+      "$GO_BIN" build -trimpath -ldflags "-s -w" -o "$ANDROID_OUT" ./cmd/frpc
+  elif [ "$ANDROID_ARCH" = "386" ]; then
+    NDK_CC="$(find_ndk_clang i686-linux-android || true)"
+    if [ -z "$NDK_CC" ]; then
+      echo "Skip android-386: missing i686-linux-android${ANDROID_API_LEVEL}-clang"
+      ANDROID_SKIPPED+=("android-386")
+      continue
+    fi
+    env CGO_ENABLED=1 GOOS=android GOARCH=386 CC="$NDK_CC" \
       "$GO_BIN" build -trimpath -ldflags "-s -w" -o "$ANDROID_OUT" ./cmd/frpc
   fi
 done
@@ -238,6 +261,44 @@ if [ -d "$ROOT/release" ]; then
     [ -f "$artifact" ] || continue
     add_version_suffix "$artifact"
   done
+fi
+
+# Ensure required release artifacts are present.
+required_artifacts=(
+  "taiwanfrp_android_amd64_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_android_386_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_android_arm64_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_android_arm_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_darwin_amd64_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_darwin_arm64_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_freebsd_386_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_freebsd_amd64_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_linux_386_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_linux_amd64_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_linux_arm_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_linux_arm64_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_linux_mips_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_linux_mips64_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_linux_mips64le_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_linux_mipsle_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_linux_riscv64_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_openbsd_386_${VERSION_FILE_SUFFIX}"
+  "taiwanfrp_windows_386_${VERSION_FILE_SUFFIX}.exe"
+  "taiwanfrp_windows_amd64_${VERSION_FILE_SUFFIX}.exe"
+  "taiwanfrp_windows_arm64_${VERSION_FILE_SUFFIX}.exe"
+)
+
+missing_artifacts=()
+for artifact in "${required_artifacts[@]}"; do
+  if [ ! -f "$ROOT/release/$artifact" ]; then
+    missing_artifacts+=("$artifact")
+  fi
+done
+
+if [ "${#missing_artifacts[@]}" -gt 0 ]; then
+  echo "Missing required artifacts:"
+  printf '  - %s\n' "${missing_artifacts[@]}"
+  exit 1
 fi
 
 git -C "$GIT_TOP" add -A -- "$ROOT_REL"
