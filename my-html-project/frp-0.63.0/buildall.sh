@@ -2,11 +2,24 @@
 set -euo pipefail
 
 ROOT="/Users/zhangqiwei/Desktop/github/my-html-project/frp-0.63.0"
-GO_BIN="${GO_BIN:-go}"
+GO_BIN="${GO_BIN:-}"
+if [ -z "$GO_BIN" ]; then
+  if [ -x "/opt/homebrew/bin/go" ]; then
+    GO_BIN="/opt/homebrew/bin/go"
+  elif command -v go >/dev/null 2>&1; then
+    GO_BIN="$(command -v go)"
+  elif [ -x "/opt/homebrew/opt/go@1.20/bin/go" ]; then
+    GO_BIN="/opt/homebrew/opt/go@1.20/bin/go"
+  else
+    echo "找不到 Go 編譯器，請安裝 Go >= 1.23 或設定 GO_BIN"
+    exit 1
+  fi
+fi
+
+BRANCH="${BRANCH:-feature/golang-rewrite}"
 REMOTE="${REMOTE:-redbean}"
 REMOTE_URL="${REMOTE_URL:-https://github.com/redbean0721/taiwanfrp-launcher.git}"
 REPO="${REPO:-redbean0721/taiwanfrp-launcher}"
-PUSH_FORCE="${PUSH_FORCE:-1}"
 
 cd "$ROOT"
 
@@ -14,7 +27,6 @@ if ! GIT_TOP="$(git rev-parse --show-toplevel 2>/dev/null)"; then
   echo "Not inside a git repository: $ROOT"
   exit 1
 fi
-
 if [[ "$ROOT" == "$GIT_TOP" ]]; then
   ROOT_REL="."
 elif [[ "$ROOT" == "$GIT_TOP/"* ]]; then
@@ -24,10 +36,19 @@ else
   exit 1
 fi
 
-BRANCH="${BRANCH:-feature/golang-rewrite}"
-
 if ! git -C "$GIT_TOP" remote get-url "$REMOTE" >/dev/null 2>&1; then
   git -C "$GIT_TOP" remote add "$REMOTE" "$REMOTE_URL"
+fi
+
+GO_VERSION_RAW="$("$GO_BIN" version | awk '{print $3}')"
+GO_VERSION="${GO_VERSION_RAW#go}"
+GO_MAJOR="${GO_VERSION%%.*}"
+GO_REST="${GO_VERSION#*.}"
+GO_MINOR="${GO_REST%%.*}"
+if [ "${GO_MAJOR}" -lt 1 ] || [ "${GO_MINOR}" -lt 23 ]; then
+  echo "目前 Go 版本: ${GO_VERSION_RAW}"
+  echo "frp-0.63.0 需要 Go >= 1.23"
+  exit 1
 fi
 
 # Clean macOS junk files
@@ -145,8 +166,11 @@ add_version_suffix() {
 
 "$GO_BIN" mod tidy
 
-# Buildall always produces nogui artifacts for maximum cross-platform compatibility.
-make -f Makefile.cross-compiles FRPC_TAGS="frpc nogui"
+# Fyne GUI cannot be reliably cross-compiled for every OS/arch in one host env.
+# Build all targets as nogui first, then overwrite host target with GUI build.
+export GOFLAGS="-tags=nogui"
+GO_BIN_DIR="$(dirname "$GO_BIN")"
+PATH="${GO_BIN_DIR}:$PATH" make -f Makefile.cross-compiles FRPC_TAGS="frpc nogui"
 
 # Android targets (CLI/nogui only)
 mkdir -p "$ROOT/release"
@@ -158,7 +182,7 @@ for ANDROID_ARCH in arm64 arm amd64; do
   echo "Build android-${ANDROID_ARCH} (nogui)..."
   if [ "$ANDROID_ARCH" = "arm64" ]; then
     env CGO_ENABLED=0 GOOS=android GOARCH="$ANDROID_ARCH" \
-      "$GO_BIN" build -trimpath -ldflags "-s -w" -tags "nogui" -o "$ANDROID_OUT" ./cmd/frpc
+      "$GO_BIN" build -trimpath -ldflags "-s -w" -o "$ANDROID_OUT" ./cmd/frpc
     continue
   fi
 
@@ -172,7 +196,7 @@ for ANDROID_ARCH in arm64 arm amd64; do
       continue
     fi
     env CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 CC="$NDK_CC" \
-      "$GO_BIN" build -trimpath -ldflags "-s -w" -tags "nogui" -o "$ANDROID_OUT" ./cmd/frpc
+      "$GO_BIN" build -trimpath -ldflags "-s -w" -o "$ANDROID_OUT" ./cmd/frpc
   elif [ "$ANDROID_ARCH" = "amd64" ]; then
     NDK_CC="$(find_ndk_clang x86_64-linux-android || true)"
     if [ -z "$NDK_CC" ]; then
@@ -181,7 +205,7 @@ for ANDROID_ARCH in arm64 arm amd64; do
       continue
     fi
     env CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC="$NDK_CC" \
-      "$GO_BIN" build -trimpath -ldflags "-s -w" -tags "nogui" -o "$ANDROID_OUT" ./cmd/frpc
+      "$GO_BIN" build -trimpath -ldflags "-s -w" -o "$ANDROID_OUT" ./cmd/frpc
   fi
 done
 
@@ -195,6 +219,20 @@ if [ "${#ANDROID_SKIPPED[@]}" -gt 0 ]; then
   fi
 fi
 
+unset GOFLAGS
+HOST_OS="$("$GO_BIN" env GOHOSTOS)"
+HOST_ARCH="$("$GO_BIN" env GOHOSTARCH)"
+HOST_OUT="$ROOT/release/taiwanfrp_${HOST_OS}_${HOST_ARCH}_${VERSION_FILE_SUFFIX}"
+if [ "$HOST_OS" = "windows" ]; then
+  HOST_OUT="${HOST_OUT}.exe"
+fi
+echo "Build host GUI binary: ${HOST_OS}-${HOST_ARCH}"
+# Avoid shell-exported cross/cgo/linker flags breaking host GUI build.
+unset GOOS GOARCH GOARM GOMIPS
+unset CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_LDFLAGS LDFLAGS
+CGO_ENABLED=1 GOOS="$HOST_OS" GOARCH="$HOST_ARCH" \
+  "$GO_BIN" build -o "$HOST_OUT" ./cmd/frpc
+
 if [ -d "$ROOT/release" ]; then
   for artifact in "$ROOT"/release/*; do
     [ -f "$artifact" ] || continue
@@ -203,33 +241,14 @@ if [ -d "$ROOT/release" ]; then
 fi
 
 git -C "$GIT_TOP" add -A -- "$ROOT_REL"
-
-if git -C "$GIT_TOP" diff --cached --quiet -- "$ROOT_REL"; then
-  echo "No tracked file changes under $ROOT_REL. Skip commit."
-else
-  read -r -p "Commit message: " MSG
-  if [ -z "${MSG}" ]; then
-    echo "Commit message cannot be empty. Abort."
-    exit 1
-  fi
-  git -C "$GIT_TOP" -c status.showUntrackedFiles=no commit -m "$MSG"
+read -r -p "Commit message: " MSG
+if [ -z "${MSG}" ]; then
+  echo "Commit message cannot be empty. Abort."
+  exit 1
 fi
-
-push_branch() {
-  if [ "$PUSH_FORCE" = "1" ]; then
-    echo "Push mode: force (overwrite remote branch history if needed)"
-    git -C "$GIT_TOP" push -f "$REMOTE" "HEAD:$BRANCH"
-  else
-    echo "Push mode: fast-forward only"
-    git -C "$GIT_TOP" push "$REMOTE" "HEAD:$BRANCH"
-  fi
-}
-
-if ! push_branch; then
-  echo "Push failed once. Retry with HTTP/1.1..."
-  git -C "$GIT_TOP" config http.version HTTP/1.1
-  push_branch
-fi
+git -C "$GIT_TOP" -c status.showUntrackedFiles=no commit -m "$MSG" || true
+git -C "$GIT_TOP" -c http.version=HTTP/1.1 -c http.postBuffer=524288000 \
+  push -f "$REMOTE" HEAD:"$BRANCH"
 
 DESKTOP_RELEASE="/Users/zhangqiwei/Desktop/release"
 if [ -d "$DESKTOP_RELEASE" ]; then
@@ -238,50 +257,19 @@ if [ -d "$DESKTOP_RELEASE" ]; then
 fi
 mv "$ROOT/release" "/Users/zhangqiwei/Desktop/"
 
-read -r -p "Create new release ${VERSION_TAG}? [Y/n]: " CREATE_TAG
-if [[ -z "${CREATE_TAG}" || "${CREATE_TAG}" =~ ^[Yy]$ ]]; then
-  SHOULD_CREATE_RELEASE="1"
-  RECREATE_RELEASE="0"
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    if gh release view "$VERSION_TAG" --repo "$REPO" >/dev/null 2>&1; then
-      echo "Release ${VERSION_TAG} already exists on ${REPO}."
-      read -r -p "Delete old release/tag and recreate? [y/N]: " RECREATE_INPUT
-      if [[ "${RECREATE_INPUT}" =~ ^[Yy]$ ]]; then
-        RECREATE_RELEASE="1"
-      else
-        SHOULD_CREATE_RELEASE="0"
-        echo "Skip release creation. Use a new version tag to create a new release."
-      fi
-    fi
-  fi
-
-  if [ "$SHOULD_CREATE_RELEASE" = "1" ]; then
-    if [ "$RECREATE_RELEASE" = "1" ]; then
-      gh release delete "$VERSION_TAG" --repo "$REPO" --yes --cleanup-tag || true
-      git -C "$GIT_TOP" tag -d "$VERSION_TAG" >/dev/null 2>&1 || true
-    fi
-
-    git -C "$GIT_TOP" tag -f "$VERSION_TAG"
-    if ! git -C "$GIT_TOP" push -f "$REMOTE" "$VERSION_TAG"; then
-      echo "Tag push failed once. Retry with HTTP/1.1..."
-      git -C "$GIT_TOP" config http.version HTTP/1.1
-      git -C "$GIT_TOP" push -f "$REMOTE" "$VERSION_TAG"
-    fi
-    if command -v gh >/dev/null 2>&1; then
-      if gh auth status >/dev/null 2>&1; then
-        gh release create "$VERSION_TAG" /Users/zhangqiwei/Desktop/release/* \
-          --repo "$REPO" \
-          --title "$VERSION_TAG" \
-          --notes "taiwanfrp client $VERSION_TAG"
-      else
-        echo "gh CLI installed but not authenticated."
-        echo "Run: gh auth login -h github.com"
-        echo "Then rerun release creation."
-      fi
-    else
-      echo "gh CLI not found. Install with: brew install gh"
-      echo "Then run: gh auth login"
-    fi
+read -r -p "Create/update release tag ${VERSION_TAG}? [y/N]: " CREATE_TAG
+if [[ "${CREATE_TAG}" =~ ^[Yy]$ ]]; then
+  git -C "$GIT_TOP" tag -f "$VERSION_TAG"
+  git -C "$GIT_TOP" -c http.version=HTTP/1.1 -c http.postBuffer=524288000 \
+    push -f "$REMOTE" "$VERSION_TAG"
+  if command -v gh >/dev/null 2>&1; then
+    gh release create "$VERSION_TAG" /Users/zhangqiwei/Desktop/release/* \
+      --repo "$REPO" \
+      --title "$VERSION_TAG" \
+      --notes "taiwanfrp client $VERSION_TAG"
+  else
+    echo "gh CLI not found. Install with: brew install gh"
+    echo "Then run: gh auth login"
   fi
 fi
 
