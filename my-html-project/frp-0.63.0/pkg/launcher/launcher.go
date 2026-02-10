@@ -31,7 +31,7 @@ const (
 	infoDir  = "lib"
 	infoFile = infoDir + "/info.json"
 
-	serverURL = "https://taiwanfrp.ddns.net"
+	serverURL = "https://taiwanfrp.me"
 )
 
 var ErrBypass = errors.New("launcher bypassed")
